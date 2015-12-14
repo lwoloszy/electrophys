@@ -1,2 +1,2 @@
 # electrophys
-Suite to streamline analysis of electrophysiological data
+Analyses and visualization of electrophysiological data
