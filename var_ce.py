@@ -49,7 +49,7 @@ def computeVarCorCovCE(
       same shape as spk_counts (which means use different phi for each cell)
 
     times:
-      1D array of length ntimes, indicating the actual time of each time bin
+      1D array of length n_times, indicating the actual time of each time bin
 
     min_trials:
       For a condition (cell/condition grouping) to contribute to the
@@ -85,7 +85,6 @@ def computeVarCorCovCE(
     masked_residuals = np.ma.array(residuals, mask=np.isnan(residuals))
     covCE = np.ma.getdata(
         np.ma.cov(masked_residuals, rowvar=False, allow_masked=True))
-
     varCE = np.diag(covCE) - np.nanmean(phi * count_means, axis=0)
 
     corCE = covCE
@@ -100,6 +99,82 @@ def computeVarCorCovCE(
 
     if times is not None:
         g_out['times'] = times[p_terminated < prop_cutoff]
+
+    return g_out
+
+
+def computeFFandPhi(spk_counts, count_means, trial_counts,
+                    min_trials=6, prop_cutoff=.5, epsilon=0.01):
+
+    """computeFFandPhi(spk_counts, count_means, trial_counts,
+                       min_trials=6, prop_cutoff=0.5)
+
+    Compute Fano factor and get phi for each cell
+
+    Parameters:
+    -----------
+
+    spk_counts:
+      2D array of shape (n_trials, n_times); typically will be an array that
+      contains individual trial spike counts from many cells and conditions;
+      an intuitive arrangment is to have contiguous trials correspond to a
+      particular cell/condition combination, and larger blocks correspond to
+      all conditions for a given cell
+
+    count_means:
+      2D array of same shape as spk_counts; for each trial within spk_counts,
+      count_means gives the mean spike count at time t for the group of trials
+      to which that spike count belongs; a group of trials here is a particular
+      grouping of cell and condition
+
+    trial_counts:
+      2D array of same shape as spk_counts; for each trial within spk_counts,
+      trial_counts gives the number of trials at time t for the group of trials
+      to which that spike count belongs; a group of trials here is a particular
+      grouping of cell and condition
+
+    times:
+      1D array of length n_times, indicating the actual time of each time bin
+
+    min_trials:
+      For a condition (cell/condition grouping) to contribute to the
+      grand average, it must have at least min_trials trials remaining at
+      that timepoint.
+
+    prop_cutoff:
+      float, attrition rule
+
+
+    Returns:
+    --------
+      dictionary with Fano factor and phi as the keys
+
+    """
+
+    spk_counts = spk_counts.copy()
+    count_means = count_means.copy()
+
+    spk_counts[trial_counts < min_trials] = np.nan
+    count_means[trial_counts < min_trials] = np.nan
+
+    n_remain = np.sum(~(np.isnan(spk_counts)), axis=0)
+    p_terminated = 1 - n_remain / n_remain[0]
+
+    spk_counts = spk_counts[:, p_terminated < prop_cutoff]
+    count_means = count_means[:, p_terminated < prop_cutoff]
+    residuals = spk_counts - count_means
+
+    var = np.nanstd(residuals, bias=False, axis=0) ** 2
+    ff = var / np.nanmean(count_means, axis=0)
+
+    g_out = {}
+    if len(ff) == 0:
+        g_out['ff'] = np.nan
+        g_out['phi'] = np.nan
+    else:
+        phi = np.nanmin(ff)
+        g_out['ff'] = ff
+        g_out['phi'] = phi
 
     return g_out
 
@@ -244,30 +319,32 @@ def simulateFindingBestCorCE(
     return mean_slopes, phis, corCEs, corCETheory
 
 
-def plotCorCESimulation(g_counts, n_bins=8):
+def plotCorCE(g, n_bins=8):
     fig = plt.figure()
-    plot_counter = 1
 
     # find the best phi
     phis = findBestPhi(
-        g_counts['spk_counts'][:, 0:n_bins],
-        g_counts['count_means'][:, 0:n_bins],
-        np.float64(g_counts['trial_counts'][:, 0:n_bins]),
+        g['spk_counts'][:, 0:n_bins],
+        g['count_means'][:, 0:n_bins],
+        np.float64(g['trial_counts'][:, 0:n_bins]),
         min_trials=6)
     g_var = computeVarCorCovCE(
-        g_counts['spk_counts'][:, 0:n_bins],
-        g_counts['count_means'][:, 0:n_bins],
-        g_counts['trial_counts'][:, 0:n_bins],
+        g['spk_counts'][:, 0:n_bins],
+        g['count_means'][:, 0:n_bins],
+        g['trial_counts'][:, 0:n_bins],
         phis)
-    ax = fig.add_subplot(2, 2, plot_counter)
+
+    ax = fig.add_subplot(121)
     cax = ax.imshow(
         g_var['corCE'], vmin=0, vmax=1,
         interpolation='nearest', cmap='jet')
     n_points = g_var['corCE'].shape[0]
+
     ax.set_xticks(np.arange(n_points))
     ax.set_yticks(np.arange(n_points))
-    #ax.set_xticklabels(g_var['times'], rotation=45)
-    #ax.set_yticklabels(g_var['times'])
+    ax.set_xticklabels(g['spk_counts_times'], rotation=45)
+    ax.set_yticklabels(g['spk_counts_times'])
+
     ax.add_line(plt.Line2D(
         np.arange(n_points)[1:], np.repeat(0, n_points)[1:],
         color='k'))
@@ -275,16 +352,17 @@ def plotCorCESimulation(g_counts, n_bins=8):
         np.arange(n_points)[0:-1] + 1, np.arange(n_points)[0:-1],
         color='k', linestyle='--'))
 
-    cbar = fig.colorbar(cax, ticks=[0, 0.5, 1])
     # vertically oriented colorbar
+    cbar = fig.colorbar(cax, ticks=[0, 0.5, 1], shrink=0.2, aspect=4)
     cbar.ax.set_yticklabels(['0.0', '0.5', '1.0'])
-    # cbar.ax.set_ylabel('CorCE')
+    cbar.ax.set_ylabel('CorCE')
 
+    # comparison with theory
     corCEPred = g_var['corCE']
     n = corCEPred.shape[0]
     corCETheory = corCEpartialSums(n)
 
-    ax = fig.add_subplot(4, 2, plot_counter + 1)
+    ax = fig.add_subplot(122)
     x = np.arange(2, n + 1)
     ax.scatter(
         x, np.diagonal(corCEPred, 1),
@@ -300,46 +378,10 @@ def plotCorCESimulation(g_counts, n_bins=8):
     ax.grid('on')
     ax.set_xlabel('Time (ms)')
     ax.set_ylabel('CorCE')
-    #ax.set_xticklabels(g_var['times'])
-    ax.set_xlim(2 - .5, n + .5)
+    ax.set_xticklabels(g['spk_counts_times'])
     ax.set_ylim(0.3, 1)
 
-
-def computeFFandPhi(spk_counts, count_means, trial_counts,
-                    min_trials=6, prop_cutoff=.5, epsilon=0.01):
-    # for a condition to contribute to the grand average, it must have
-    # at least min_trials trials remaining at that timepoint;
-    # to make the code easier, trials_counts has to be the same shape as
-    # spk_counts and count_means;
-    # this allows for a more accurate estimation of residuals relative to mean;
-    # prop_cutoff refers to the grand matrix, not each condition
-
-    spk_counts = spk_counts.copy()
-    count_means = count_means.copy()
-
-    spk_counts[trial_counts < min_trials] = np.nan
-    count_means[trial_counts < min_trials] = np.nan
-
-    n_remain = np.sum(~(np.isnan(spk_counts)), axis=0)
-    p_terminated = 1 - n_remain / n_remain[0]
-
-    spk_counts = spk_counts[:, p_terminated < prop_cutoff]
-    count_means = count_means[:, p_terminated < prop_cutoff]
-    residuals = spk_counts - count_means
-
-    var = np.nanstd(residuals, bias=False, axis=0) ** 2
-    ff = var / np.nanmean(count_means, axis=0)
-
-    g_out = {}
-    if len(ff) == 0:
-        g_out['ff'] = np.nan
-        g_out['phi'] = np.nan
-    else:
-        phi = np.nanmin(ff)
-        g_out['ff'] = ff
-        g_out['phi'] = phi
-
-    return g_out
+    plt.tight_layout()
 
 
 def nancov(matrix_in):
@@ -457,7 +499,7 @@ def findBestPhi(spk_counts, count_means, trial_counts, min_trials=6):
     if err_fit > err_grid_best:
         print 'grid outperformed search'
         phi_fit = phi_grid_best
-        err_fit = err_grid_mind
+        # err_fit = err_grid_mind
 
     return phi_fit
 
