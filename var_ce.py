@@ -20,7 +20,7 @@ def computeVarCorCovCE(
                           times=None, min_trials=6, prop_cutoff=0.5)
 
     Compute variance, correlation and covariance of the conditional expectation
-    of spike counts
+    of spike counts;
 
     Parameters:
     -----------
